@@ -30,7 +30,7 @@ class ShapefileProcessorThread(QThread):
         print('Selecting geometries with holes...')
         gdf_holes = gdf[gdf.geometry.apply(has_holes)]
 
-        output_path = os.path.join(self.output_dir, 'ZAPM_XP-FIBRE_with_holes.shp')
+        output_path = os.path.join(self.output_dir, 'sample_zones_with_holes.shp')
         print('Saving to new shapefile...')
         gdf_holes.to_file(output_path)
         print('Done.')
