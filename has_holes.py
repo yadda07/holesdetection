@@ -1,49 +1,70 @@
-import sys
 import os
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QProgressBar
-from PyQt5.QtGui import QPalette, QColor
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import sys
+
 import geopandas as gpd
-from shapely.geometry import Polygon, MultiPolygon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QLabel,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+from shapely.geometry import MultiPolygon, Polygon
+
+
+def _geometry_has_holes(geom) -> bool:
+    if geom is None:
+        return False
+    if isinstance(geom, Polygon):
+        return len(geom.interiors) > 0
+    if isinstance(geom, MultiPolygon):
+        return any(len(poly.interiors) > 0 for poly in geom.geoms)
+    return False
+
 
 class ShapefileProcessorThread(QThread):
     progress_update = pyqtSignal(int)
+    error_occurred = pyqtSignal(str)
 
-    def __init__(self, shape_path, output_dir):
+    def __init__(self, shape_path: str, output_dir: str):
         super().__init__()
         self.shape_path = shape_path
         self.output_dir = output_dir
 
     def run(self):
-        def has_holes(geom):
-            if geom is None:
-                return False
-            if isinstance(geom, Polygon):
-                return len(geom.interiors) > 0
-            elif isinstance(geom, MultiPolygon):
-                return any(len(poly.interiors) > 0 for poly in geom.geoms)
-            return False
+        try:
+            self.progress_update.emit(20)
+            gdf = gpd.read_file(self.shape_path)
+            self.progress_update.emit(60)
+            gdf_holes = gdf[gdf.geometry.apply(_geometry_has_holes)]
+            if gdf_holes.empty:
+                self.progress_update.emit(100)
+                return
+            out_path = os.path.join(self.output_dir, 'sample_zones_with_holes.shp')
+            gdf_holes.to_file(out_path)
+            self.progress_update.emit(100)
+        except Exception as exc:
+            self.error_occurred.emit(
+                f"has_holes: export failed for '{self.shape_path}': {exc}"
+            )
 
-        print('Reading Shapefile...')
-        gdf = gpd.read_file(self.shape_path)
-
-        print('Selecting geometries with holes...')
-        gdf_holes = gdf[gdf.geometry.apply(has_holes)]
-
-        output_path = os.path.join(self.output_dir, 'sample_zones_with_holes.shp')
-        print('Saving to new shapefile...')
-        gdf_holes.to_file(output_path)
-        print('Done.')
 
 class ShapefileProcessor(QWidget):
     def __init__(self):
         super().__init__()
-        self.initUI()
+        self.shape_path = ''
+        self.output_dir = ''
+        self.worker_thread = None
+        self.init_ui()
 
-    def initUI(self):
+    def init_ui(self):
         self.setWindowTitle('Shapefile Processor')
-
-        QApplication.setStyle("Fusion")
+        QApplication.setStyle('Fusion')
 
         dark_palette = QPalette()
         dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
@@ -65,7 +86,7 @@ class ShapefileProcessor(QWidget):
         self.button_select_shape = QPushButton('Parcourir...')
         self.button_select_shape.clicked.connect(self.select_shape)
 
-        self.label_output_dir = QLabel('Choisir le répertoire de dépôt :')
+        self.label_output_dir = QLabel('Choisir le repertoire de depot :')
         self.button_select_output_dir = QPushButton('Parcourir...')
         self.button_select_output_dir.clicked.connect(self.select_output_dir)
 
@@ -81,36 +102,50 @@ class ShapefileProcessor(QWidget):
         layout.addWidget(self.button_select_output_dir)
         layout.addWidget(self.button_process)
         layout.addWidget(self.progress_bar)
-
         self.setLayout(layout)
 
     def select_shape(self):
-        options = QFileDialog.Options()
-        file_name, _ = QFileDialog.getOpenFileName(self, 'Choisir le fichier Shape', '', 'Shapefiles (*.shp);;All Files (*)', options=options)
-        self.shape_path = file_name
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            'Choisir le fichier Shape',
+            '',
+            'Shapefiles (*.shp);;All Files (*)',
+        )
+        if file_name:
+            self.shape_path = file_name
 
     def select_output_dir(self):
-        options = QFileDialog.Options()
-        folder_path = QFileDialog.getExistingDirectory(self, 'Choisir le répertoire de dépôt', options=options)
-        self.output_dir = folder_path
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            'Choisir le repertoire de depot',
+        )
+        if folder_path:
+            self.output_dir = folder_path
 
     def process_shapefile(self):
-        if not hasattr(self, 'shape_path') or not hasattr(self, 'output_dir'):
+        if not self.shape_path or not self.output_dir:
             return
 
         self.button_process.setEnabled(False)
-
-        self.worker_thread = ShapefileProcessorThread(self.shape_path, self.output_dir)
+        self.worker_thread = ShapefileProcessorThread(
+            self.shape_path,
+            self.output_dir,
+        )
         self.worker_thread.progress_update.connect(self.update_progress)
+        self.worker_thread.error_occurred.connect(self.on_error)
         self.worker_thread.finished.connect(self.processing_finished)
         self.worker_thread.start()
 
-    def update_progress(self, progress):
+    def update_progress(self, progress: int):
         self.progress_bar.setValue(progress)
+
+    def on_error(self, message: str):
+        QMessageBox.critical(self, 'Erreur', message)
 
     def processing_finished(self):
         self.button_process.setEnabled(True)
         self.progress_bar.setValue(0)
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
